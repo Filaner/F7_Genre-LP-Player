@@ -1,4 +1,4 @@
-# F7_Genre-LP-Player
+<img width="1500" height="600" alt="scaler_stats" src="https://github.com/user-attachments/assets/126be367-9f03-4e18-841b-268f6f75223e" /># F7_Genre-LP-Player
 KG 카이로스 7시 Python Proejct
 
 
@@ -24,9 +24,11 @@ AI는 음악을 다음 네 가지 관점에서 분석합니다:
 #### 피처 중요도 (Feature Importance)
 모델이 장르를 판단할 때 어떤 요소에 가장 큰 비중을 두는지 보여줍니다. 예를 들어, 댄스나 힙합 장르에서는 `Tempo`와 `RMS(에너지)` 수치가 높은 중요도를 보입니다.
 
-![Feature Importance](./feature_importance.png)
+<img width="1200" height="1000" alt="feature_importance" src="https://github.com/user-attachments/assets/82bcf29c-b3b1-4098-860f-3965ff83f4eb" />
+
 
 #### 데이터 정규화 (Scaling Statistics)
 수집된 다양한 오디오 특징들은 각기 다른 단위를 가집니다 (예: BPM은 120대, RMS는 0.1대). AI 모델이 편향되지 않도록 `StandardScaler`를 사용해 평균 0, 표준편차 1의 상태로 변환하는 과정을 거칩니다.
 
+<img width="1500" height="600" alt="scaler_stats" src="https://github.com/user-attachments/assets/102d92c9-e598-41ed-9dd7-fb693c209d96" />
 ![Scaler Stats](./scaler_stats.png)
