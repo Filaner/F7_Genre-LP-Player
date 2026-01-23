@@ -1,10 +1,10 @@
-<img width="1500" height="600" alt="scaler_stats" src="https://github.com/user-attachments/assets/126be367-9f03-4e18-841b-268f6f75223e" /># F7_Genre-LP-Player
+# F7_Genre-LP-Player
 KG 카이로스 7시 Python Proejct
 
 
 ## 🧠 AI Genre Analysis Engine
 
-이 턴테이블은 단순한 재생기를 넘어, 실시간으로 음악의 지문(Fingerprint)을 분석하여 장르를 판별하는 인공지능 엔진을 탑재하고 있습니다.
+이 턴테이블은 단순한 재생기를 넘어, 실시간으로 음악을 분석하여 장르를 판별하는 인공지능 엔진을 탑재하고 있습니다.
 
 ### 1. 분석 파이프라인 (Analysis Pipeline)
 1. **오디오 샘플링**: 곡의 특징이 가장 뚜렷한 30초 지점부터 3초간의 데이터를 추출합니다.
