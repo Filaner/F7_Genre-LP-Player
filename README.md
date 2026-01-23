@@ -1,6 +1,6 @@
 # F7_Genre-LP-Player
-KG 카이로스 7시 Python Proejct
-이 턴테이블은 단순한 재생기를 넘어, 실시간으로 음악을 분석하여 장르를 판별하는 인공지능 엔진을 탑재하고 있습니다.
+KG 카이로스 7기 Python Proejct
+
 
 ✨ Key Features
 Dual-Engine AI Analysis: 머신러닝(통계 기반)과 딥러닝(패턴 기반) 엔진을 선택하여 장르 분석 가능
@@ -46,7 +46,6 @@ AI는 음악을 다음 네 가지 관점에서 분석합니다:
 #### 데이터 정규화 (Scaling Statistics)
 수집된 다양한 오디오 특징들은 각기 다른 단위를 가집니다 (예: BPM은 120대, RMS는 0.1대). AI 모델이 편향되지 않도록 `StandardScaler`를 사용해 평균 0, 표준편차 1의 상태로 변환하는 과정을 거칩니다.
 
-<img width="1500" height="600" alt="scaler_stats" src="https://github.com/user-attachments/assets/102d92c9-e598-41ed-9dd7-fb693c209d96" />
 
 
 
@@ -64,4 +63,9 @@ AI는 음악을 다음 네 가지 관점에서 분석합니다:
 <img width="1000" height="400" alt="hip_hop_mel" src="https://github.com/user-attachments/assets/5a732021-d23f-4ad1-8846-ba3c124a5fdc" />
 
 AI 2 엔진은 위 멜-스펙트로그램과 같이 소리의 주파수 밀도를 이미지로 변환하여 학습합니다. Rock 장르의 경우 저음역대의 에너지가 강한 반면, Hip-Hop은 주기적인 배음 구조를 띄는 것을 확인할 수 있습니다.
+
+
+## 실행 화면
+<img width="772" height="753" alt="2" src="https://github.com/user-attachments/assets/fde22e9b-e28e-4acd-ad40-229adb39a676" />
+
 
