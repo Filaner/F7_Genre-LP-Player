@@ -2,16 +2,17 @@
 KG 카이로스 7기 Python Proejct
 
 
-✨ Key Features
-Dual-Engine AI Analysis: 머신러닝(통계 기반)과 딥러닝(패턴 기반) 엔진을 선택하여 장르 분석 가능
+## ✨ Key Features
 
-Realistic Turntable UI: LP 회전, 톤암 이동, 레코드판 드래그를 통한 스크러빙(Scrubbing) 구현
+1. Genre AI Analysis: 패턴 기반의 딥러닝 엔진을 활용하여 장르 분석 가능
 
-Concert Mode: 실시간 Reverb 알고리즘을 적용한 입체적인 음향 효과
+2. Realistic Turntable UI: LP 회전, 톤암 이동, 레코드판 드래그를 통한 스크러빙(Scrubbing) 구현
 
-Music Library: 하위 폴더 내 음원을 자동으로 리스팅하고 관리하는 사이드바 UI
+3. Concert Mode: 실시간 Reverb 알고리즘을 적용한 입체적인 음향 효과
 
-Dynamic Visualizer: 실시간 볼륨 레벨에 반응하는 후광(Glow) 효과 및 애니메이션
+4. Music Library: 하위 폴더 내 음원을 자동으로 리스팅하고 관리하는 사이드바 UI
+
+5. Dynamic Visualizer: 실시간 볼륨 레벨에 반응하는 시각 효과 및 애니메이션
 
 
 
@@ -43,11 +44,6 @@ AI는 음악을 다음 네 가지 관점에서 분석합니다:
 <img width="1200" height="1000" alt="feature_importance" src="https://github.com/user-attachments/assets/82bcf29c-b3b1-4098-860f-3965ff83f4eb" />
 
 
-#### 데이터 정규화 (Scaling Statistics)
-수집된 다양한 오디오 특징들은 각기 다른 단위를 가집니다 (예: BPM은 120대, RMS는 0.1대). AI 모델이 편향되지 않도록 `StandardScaler`를 사용해 평균 0, 표준편차 1의 상태로 변환하는 과정을 거칩니다.
-
-
-
 
 
 
@@ -58,7 +54,10 @@ AI는 음악을 다음 네 가지 관점에서 분석합니다:
 1. **다중 구간 샘플링**: 곡의 특징을 정확하게 분석하기 위해 10초, 30초, 50초 지점에서 각각 3초씩 총 3개의 데이터 세그먼트를 추출
 2. **Mel-Spectrogram 변환**: 오디오 데이터를 2차원 이미지 데이터로 변환
 3. **CNN 분석**: 스펙트로그램 이미지에서 다양한 필터를 통해 음악의 특징과 질감을 추출하여, 다수결 방식으로 최종 예측 결과를 도출
+    -> 22,050Hz로 샘플링된 데이터를 128개의 Mel-bins로 시각화
 
+
+<Mel-Spectrogram 예시>
 <img width="1000" height="400" alt="rock_mel" src="https://github.com/user-attachments/assets/03fdff63-eece-41aa-bde4-0dc35ceed0a7" />
 <img width="1000" height="400" alt="hip_hop_mel" src="https://github.com/user-attachments/assets/5a732021-d23f-4ad1-8846-ba3c124a5fdc" />
 
@@ -66,6 +65,7 @@ AI 2 엔진은 위 멜-스펙트로그램과 같이 소리의 주파수 밀도�
 
 
 ## 실행 화면
+
 <img width="772" height="753" alt="2" src="https://github.com/user-attachments/assets/fde22e9b-e28e-4acd-ad40-229adb39a676" />
 
 
