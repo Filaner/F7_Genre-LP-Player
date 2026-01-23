@@ -1,0 +1,337 @@
+import sys
+import os
+import librosa
+import pyaudio
+import numpy as np
+import math
+import pickle
+import warnings
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from collections import Counter
+from PyQt5 import QtCore, QtGui, QtWidgets
+from mutagen import File as MusicFile
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+CONFIG = {
+    "CHUNK_SIZE": 1024,
+    "LP_SIZE": 350,
+    "WIDTH_PLAYER": 480,
+    "WIDTH_SIDEBAR": 300,
+    "ROTATION_SPEED": 1.2,
+    "SMOOTHING": 0.2,
+    "SAFETY_GAIN": 0.95,
+    "DEFAULT_IMG": "LPim.png",
+    "FIXED_HEIGHT": 720,
+    "MUSIC_DIR": "Music",
+    "DATA_DIR": "Data",
+    "REQUIRED_FILES": [
+        'genre_model.pkl',
+        'scaler.pkl',
+        'label_encoder.pkl',
+        'music_genre_cnn_final.h5'
+    ]
+}
+
+class Theme:
+    BG = "#121212"
+    GOLD = "#CBB677"
+    GREEN = "#1DB954"
+    PLINTH_START = "#2c2c2c"
+    PLINTH_END = "#1a1a1a"
+    GOLD_RGB = (203, 182, 119)
+
+    @staticmethod
+    def get_list_qss(color):
+        return f"""
+            QListWidget {{ background: transparent; border: none; color: #BBB; font-size: 12px; outline: none; }}
+            QListWidget::item {{ padding: 12px; border-bottom: 1px solid #252525; }}
+            QListWidget::item:selected {{ background: #222; color: white; border-left: 4px solid {color}; }}
+        """
+
+class AudioWorker(QtCore.QThread):
+    frame_changed = QtCore.pyqtSignal(int, float)
+    finished = QtCore.pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(); self.p = parent; self.running = True; self.last_scrub = 0
+
+    def run(self):
+        while self.running:
+            if self.p.is_dragging_lp: self._handle_scrubbing()
+            elif self.p.is_playing: self._handle_playback()
+            else: self.msleep(10)
+
+    def _handle_scrubbing(self):
+        if abs(self.p.current_frame - self.last_scrub) > CONFIG["CHUNK_SIZE"]:
+            start = self.p.current_frame; end = start + (CONFIG["CHUNK_SIZE"] * 2)
+            if end < len(self.p.audio_data):
+                chunk = self.p.audio_data[start:end]; stereo = np.repeat(chunk[:, np.newaxis], 2, axis=1).flatten()
+                self.p.stream.write(np.clip(stereo * CONFIG["SAFETY_GAIN"], -1.0, 1.0).astype(np.float32).tobytes())
+                self.last_scrub = start
+        self.msleep(5)
+
+    def _handle_playback(self):
+        start = self.p.current_frame; end = start + CONFIG["CHUNK_SIZE"]
+        if end < len(self.p.audio_data):
+            chunk = self.p.audio_data[start:end]; vol = np.sqrt(np.mean(chunk**2))
+            out = self.p.apply_reverb(chunk) if self.p.is_reverb_on else np.repeat(chunk[:, np.newaxis], 2, axis=1)
+            try:
+                self.p.stream.write(np.clip(out.flatten() * CONFIG["SAFETY_GAIN"], -1.0, 1.0).astype(np.float32).tobytes())
+                self.p.current_frame += CONFIG["CHUNK_SIZE"]; self.frame_changed.emit(self.p.current_frame, vol)
+            except: self.running = False
+        else: self.p.is_playing = False; self.finished.emit()
+
+class PremiumVintagePlayer(QtWidgets.QWidget):
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+        self.is_playing = self.is_reverb_on = self.is_expanded = self.is_dragging_lp = False
+        self.rotation_angle = self.current_frame = self.smoothed_volume = self.last_mouse_angle = 0
+        self.total_frames = 1; self.has_album_art = False; self.selected_ai = 1 
+
+        self._check_data_files()
+        self._init_data()
+        self._setup_ui()
+        self._init_audio_engine()
+        self._load_metadata()
+        self._refresh_playlist()
+
+        self.worker = AudioWorker(self); self.worker.frame_changed.connect(self._on_frame_changed); self.worker.finished.connect(self._on_playback_finished); self.worker.start()
+        self.timer = QtCore.QTimer(); self.timer.timeout.connect(self._update_animation); self.timer.start(20)
+
+    def _check_data_files(self):
+        """Data 폴더 내 필수 파일이 있는지 확인하고 없으면 창을 띄운 뒤 종료합니다."""
+        missing = []
+        for f in CONFIG["REQUIRED_FILES"]:
+            if not os.path.exists(os.path.join(CONFIG["DATA_DIR"], f)):
+                missing.append(f)
+        
+        if missing:
+            msg = QtWidgets.QMessageBox()
+            msg.setIcon(QtWidgets.QMessageBox.Critical)
+            msg.setWindowTitle("오류")
+            msg.setText("모델 파일이 누락되었습니다.")
+            msg.setInformativeText(f"누락된 파일: {', '.join(missing)}\n'Data' 폴더를 확인해 주세요.")
+            msg.exec_()
+            sys.exit(1)
+
+    def _init_data(self):
+        self.raw_pixmap = QtGui.QPixmap(CONFIG["LP_SIZE"], CONFIG["LP_SIZE"]); self.raw_pixmap.fill(QtGui.QColor("#181818"))
+        data_path = CONFIG["DATA_DIR"]
+        try:
+            with open(os.path.join(data_path, 'genre_model.pkl'), 'rb') as f: self.model_ml = pickle.load(f)
+            with open(os.path.join(data_path, 'scaler.pkl'), 'rb') as f: self.scaler_ml = pickle.load(f)
+            with open(os.path.join(data_path, 'label_encoder.pkl'), 'rb') as f: self.label_encoder_ml = pickle.load(f)
+            self.ai1_active = True
+        except: self.ai1_active = False
+        try:
+            self.model_dl = load_model(os.path.join(data_path, 'music_genre_cnn_final.h5'))
+            self.genres_dl = ['BLUES', 'CLASSICAL', 'COUNTRY', 'DISCO', 'HIPHOP', 'JAZZ', 'METAL', 'POP', 'REGGAE', 'ROCK']
+            self.ai2_active = True
+        except: self.ai2_active = False
+
+    def _setup_ui(self):
+        self.setWindowTitle("AI Smart Turntable"); self.setFixedSize(CONFIG["WIDTH_PLAYER"], CONFIG["FIXED_HEIGHT"])
+        self.main_layout = QtWidgets.QHBoxLayout(self); self.main_layout.setContentsMargins(0,0,0,0); self.main_layout.setSpacing(0)
+        self.player_widget = QtWidgets.QWidget(); self.player_widget.setFixedWidth(CONFIG["WIDTH_PLAYER"])
+        p_layout = QtWidgets.QVBoxLayout(self.player_widget); p_layout.setContentsMargins(30,15,30,30); p_layout.setSpacing(2)
+
+        self.lp_label = QtWidgets.QLabel(); self.lp_label.setFixedSize(400, 400); self.lp_label.mousePressEvent = self._on_lp_press; self.lp_label.mouseMoveEvent = self._on_lp_move; self.lp_label.mouseReleaseEvent = self._on_lp_release
+        p_layout.addWidget(self.lp_label, alignment=QtCore.Qt.AlignCenter); p_layout.addSpacing(5)
+
+        self.title_lbl = self._create_lbl(24, "bold", "#FFF"); p_layout.addWidget(self.title_lbl)
+        self.artist_lbl = self._create_lbl(17, "normal", "#AAA"); p_layout.addWidget(self.artist_lbl)
+        self.info_lbl = self._create_lbl(13, "normal", "#888"); p_layout.addWidget(self.info_lbl)
+        p_layout.addSpacing(15); self.genre_lbl = self._create_lbl(12, "bold", Theme.GOLD); p_layout.addWidget(self.genre_lbl)
+
+        t_layout = QtWidgets.QHBoxLayout(); self.time_left = self._create_lbl(11, "normal", "#AAA"); self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal); self.slider.sliderMoved.connect(self._seek_audio); self.time_right = self._create_lbl(11, "normal", "#AAA")
+        t_layout.addWidget(self.time_left); t_layout.addWidget(self.slider); t_layout.addWidget(self.time_right); p_layout.addLayout(t_layout); p_layout.addSpacing(10)
+
+        b_layout = QtWidgets.QHBoxLayout(); b_layout.setSpacing(10)
+        self.btn_play = self._create_btn("▶ PLAY", self._toggle_play)
+        ai_container = QtWidgets.QHBoxLayout(); ai_container.setSpacing(4)
+        self.btn_ai1 = self._create_btn("AI 1", lambda: self._switch_ai(1), checkable=True); self.btn_ai2 = self._create_btn("AI 2", lambda: self._switch_ai(2), checkable=True)
+        self.btn_ai1.setChecked(True); ai_container.addWidget(self.btn_ai1); ai_container.addWidget(self.btn_ai2)
+        self.btn_reverb = self._create_btn("CONCERT MODE", self._toggle_reverb, checkable=True)
+        
+        b_layout.addWidget(self.btn_play, 1); b_layout.addLayout(ai_container, 1); b_layout.addWidget(self.btn_reverb, 1)
+        p_layout.addLayout(b_layout)
+
+        self.btn_toggle = QtWidgets.QPushButton("〉", self.player_widget); self.btn_toggle.setFixedSize(20, 60); self.btn_toggle.move(CONFIG["WIDTH_PLAYER"]-20, 310); self.btn_toggle.clicked.connect(self._toggle_sidebar)
+        self.main_layout.addWidget(self.player_widget)
+
+        self.side_panel = QtWidgets.QWidget(); self.side_panel.setFixedWidth(CONFIG["WIDTH_SIDEBAR"]); self.side_panel.setStyleSheet("background-color: #1a1a1a; border-left: 1px solid #333;")
+        s_layout = QtWidgets.QVBoxLayout(self.side_panel); self.lib_title = self._create_lbl(14, "bold", Theme.GREEN, "MUSIC LIBRARY"); self.lib_title.setContentsMargins(0, 20, 0, 10); s_layout.addWidget(self.lib_title)
+        self.list_widget = QtWidgets.QListWidget(); self.list_widget.itemDoubleClicked.connect(self._on_list_double_click); s_layout.addWidget(self.list_widget)
+        self.main_layout.addWidget(self.side_panel); self.side_panel.hide(); self._update_theme_styles()
+
+    def _create_lbl(self, size, weight, color, text=""):
+        lbl = QtWidgets.QLabel(text); lbl.setAlignment(QtCore.Qt.AlignCenter); lbl.setStyleSheet(f"font-size: {size}px; font-weight: {weight}; color: {color}; font-family: 'Segoe UI';"); return lbl
+
+    def _create_btn(self, text, slot, checkable=False):
+        btn = QtWidgets.QPushButton(text); btn.setCheckable(checkable); btn.clicked.connect(slot); btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setStyleSheet(self._get_btn_qss(Theme.GREEN)); return btn
+
+    def _get_btn_qss(self, color):
+        return f"""
+            QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #444, stop:1 #222); color: white; border-radius: 5px; height: 40px; font-family: 'Segoe UI'; font-weight: bold; font-size: 12px; }} 
+            QPushButton:checked {{ background: {color}; color: black; }}
+        """
+
+    def _update_theme_styles(self):
+        color = Theme.GOLD if self.is_reverb_on else Theme.GREEN
+        self.slider.setStyleSheet(f"QSlider::groove:horizontal {{ height: 4px; background: #333; }} QSlider::sub-page:horizontal {{ background: {color}; }} QSlider::handle:horizontal {{ background: #FFF; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }}")
+        self.btn_toggle.setStyleSheet(f"QPushButton {{ background: {color}; color: black; border-top-left-radius: 5px; border-bottom-left-radius: 5px; font-weight: bold; border: none; }}")
+        self.lib_title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {color}; font-family: 'Segoe UI';")
+        self.list_widget.setStyleSheet(Theme.get_list_qss(color))
+        qss = self._get_btn_qss(color); self.btn_ai1.setStyleSheet(qss); self.btn_ai2.setStyleSheet(qss); self.btn_reverb.setStyleSheet(qss)
+
+    def _switch_ai(self, mode):
+        """AI 버튼 클릭 시 모드를 변경하고 즉시 분석을 실행합니다."""
+        self.selected_ai = mode
+        self.btn_ai1.setChecked(mode == 1)
+        self.btn_ai2.setChecked(mode == 2)
+        self.genre_lbl.setText("AI GENRE : ANALYZING...")
+        QtCore.QTimer.singleShot(100, self._run_ai_analysis)
+
+    def _init_audio_engine(self):
+        self.audio_data, self.sr = librosa.load(self.file_path, sr=None, mono=True); self.total_frames = len(self.audio_data); self.slider.setMaximum(self.total_frames); self.time_right.setText(self._format_time(self.total_frames / self.sr))
+        self.pa = pyaudio.PyAudio(); self.stream = self.pa.open(format=pyaudio.paFloat32, channels=2, rate=int(self.sr), output=True); self.stream.start_stream()
+        self.rev_delays_L, self.rev_delays_R = [1499, 2503, 3511, 4507], [1601, 2609, 3613, 4603]
+        self.rev_bufs_L, self.rev_bufs_R = [np.zeros(d) for d in self.rev_delays_L], [np.zeros(d) for d in self.rev_delays_R]
+
+    def apply_reverb(self, chunk):
+        wet_L, wet_R = np.zeros_like(chunk), np.zeros_like(chunk); fb, mix = 0.75, 0.45
+        for i, d in enumerate(self.rev_delays_L):
+            buf = self.rev_bufs_L[i]
+            for j in range(len(chunk)): val = buf[j%d]; wet_L[j] += val; buf[j%d] = chunk[j] + val*fb
+            self.rev_bufs_L[i] = np.roll(buf, -len(chunk))
+        for i, d in enumerate(self.rev_delays_R):
+            buf = self.rev_bufs_R[i]
+            for j in range(len(chunk)): val = buf[j%d]; wet_R[j] += val; buf[j%d] = chunk[j] + val*fb
+            self.rev_bufs_R[i] = np.roll(buf, -len(chunk))
+        return np.stack([chunk + (mix * wet_L / 4), chunk + (mix * wet_R / 4)], axis=1)
+
+    def _load_metadata(self):
+        try:
+            self.raw_pixmap.fill(QtGui.QColor("#181818")); meta = MusicFile(self.file_path)
+            self.title_lbl.setText(str(meta.get('TIT2', [os.path.basename(self.file_path)])[0])); self.artist_lbl.setText(str(meta.get('TPE1', ['Unknown Artist'])[0]))
+            self.info_lbl.setText(f"{meta.get('TALB', ['Unknown Album'])[0]} | {str(meta.get('TDRC', meta.get('TYER', ['Unknown Year'])))[:4]}")
+            self.has_album_art = False
+            for k in ['APIC:', 'APIC']:
+                if k in meta: self.raw_pixmap.loadFromData(meta[k].data); self.has_album_art = True; break
+            if not self.has_album_art:
+                if os.path.exists(CONFIG["DEFAULT_IMG"]): self.raw_pixmap.load(CONFIG["DEFAULT_IMG"])
+                else: self.raw_pixmap.fill(QtGui.QColor("#800000"))
+            self.render_lp()
+            self.genre_lbl.setText("AI GENRE : ANALYZING...")
+            QtCore.QTimer.singleShot(100, self._run_ai_analysis)
+        except:
+            self.title_lbl.setText(os.path.basename(self.file_path)); self.artist_lbl.setText("Unknown Artist"); self.info_lbl.setText("Unknown Album | Unknown Year"); self.has_album_art = False; self.render_lp()
+
+    def _run_ai_analysis(self):
+        """현재 선택된 AI 모드에 따라 해당 함수만 호출합니다."""
+        if self.selected_ai == 1:
+            self._run_ai1_ml()
+        else:
+            self._run_ai2_dl()
+
+    def _run_ai1_ml(self):
+        if not getattr(self, 'ai1_active', False): self.genre_lbl.setText("AI 1 : MODEL NOT FOUND"); return
+        try:
+            y, sr = librosa.load(self.file_path, duration=3, offset=min(30, self.total_frames/self.sr - 3))
+            c, rms = librosa.feature.chroma_stft(y=y, sr=sr), librosa.feature.rms(y=y)
+            sc, sb = librosa.feature.spectral_centroid(y=y, sr=sr), librosa.feature.spectral_bandwidth(y=y, sr=sr)
+            sr_off, z = librosa.feature.spectral_rolloff(y=y, sr=sr), librosa.feature.zero_crossing_rate(y)
+            h, p = librosa.effects.hpss(y)
+            t, _ = librosa.beat.beat_track(y=y, sr=sr)
+            tempo = float(t[0]) if isinstance(t, (np.ndarray, list)) else float(t)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
+            feats = [np.mean(c), np.var(c), np.mean(rms), np.var(rms), np.mean(sc), np.var(sc), np.mean(sb), np.var(sb), np.mean(sr_off), np.var(sr_off), np.mean(z), np.var(z), np.mean(h), np.var(h), np.mean(p), np.var(p), tempo]
+            for m in mfcc: feats.extend([np.mean(m), np.var(m)])
+            scaled = self.scaler_ml.transform(np.array([feats]))
+            p_idx = self.model_ml.predict(scaled)[0]
+            self.genre_lbl.setText(f"AI 1 GENRE : {self.label_encoder_ml.inverse_transform([p_idx])[0].upper()}")
+        except: self.genre_lbl.setText("AI 1 : ANALYSIS ERROR")
+
+    def _run_ai2_dl(self):
+        if not getattr(self, 'ai2_active', False): self.genre_lbl.setText("AI 2 : MODEL NOT FOUND"); return
+        try:
+            preds = []
+            for offset in [10, 30, 50]:
+                if offset + 3 > self.total_frames / self.sr: continue
+                y, sr = librosa.load(self.file_path, sr=22050, duration=3, offset=offset)
+                mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128); log_mel = librosa.power_to_db(mel, ref=np.max)
+                log_mel = (log_mel - log_mel.min()) / (log_mel.max() - log_mel.min())
+                input_data = log_mel[np.newaxis, ..., np.newaxis]
+                pred_prob = self.model_dl.predict(input_data, verbose=0); preds.append(np.argmax(pred_prob))
+            if preds: self.genre_lbl.setText(f"AI 2 GENRE : {self.genres_dl[Counter(preds).most_common(1)[0][0]]}")
+        except: self.genre_lbl.setText("AI 2 : ANALYSIS ERROR")
+
+    def paintEvent(self, e):
+        painter = QtGui.QPainter(self); painter.setRenderHint(QtGui.QPainter.Antialiasing); p_rect = QtCore.QRect(0, 0, CONFIG["WIDTH_PLAYER"], self.height())
+        grad = QtGui.QLinearGradient(0,0,0,self.height()); grad.setColorAt(0, QtGui.QColor(Theme.PLINTH_START)); grad.setColorAt(1, QtGui.QColor(Theme.PLINTH_END)); painter.fillRect(p_rect, grad)
+        if self.is_reverb_on and not self.is_dragging_lp:
+            center = QtCore.QPointF(CONFIG["WIDTH_PLAYER"]/2, 230); radius = 240 + (self.smoothed_volume*300); r_grad = QtGui.QRadialGradient(center, radius); r,g,b = Theme.GOLD_RGB
+            r_grad.setColorAt(0, QtGui.QColor(r,g,b, min(255, int(100 + self.smoothed_volume*120)))); r_grad.setColorAt(0.6, QtGui.QColor(r,g,b, 30)); r_grad.setColorAt(1, QtGui.QColor(20,20,20,0)); painter.setBrush(r_grad); painter.setPen(QtCore.Qt.NoPen); painter.drawRect(p_rect)
+
+    def render_lp(self):
+        pix = QtGui.QPixmap(400, 400); pix.fill(QtCore.Qt.transparent); p = QtGui.QPainter(pix); p.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform); p.save(); p.translate(200, 200)
+        vinyl_grad = QtGui.QConicalGradient(0, 0, -self.rotation_angle); colors = [(0.0, "#222"), (0.15, "#444"), (0.25, "#222"), (0.4, "#555"), (0.55, "#222"), (0.7, "#444"), (0.85, "#222"), (1.0, "#222")]
+        for pos, color in colors: vinyl_grad.setColorAt(pos, QtGui.QColor(color))
+        p.setPen(QtCore.Qt.NoPen); p.setBrush(vinyl_grad); p.drawEllipse(-175, -175, 350, 350); p.setPen(QtGui.QPen(QtGui.QColor("#111"), 8)); p.drawEllipse(-171, -171, 342, 342); p.rotate(self.rotation_angle); label_radius = 60; label_path = QtGui.QPainterPath(); label_path.addEllipse(-label_radius, -label_radius, label_radius*2, label_radius*2); p.setClipPath(label_path)
+        if not self.raw_pixmap.isNull():
+            base_s = label_radius * 2; is_def = not getattr(self, 'has_album_art', False)
+            zoom = 1.4 if is_def else 1.0; mode = QtCore.Qt.KeepAspectRatioByExpanding if is_def else QtCore.Qt.KeepAspectRatio
+            target_s = int(base_s * zoom); scaled = self.raw_pixmap.scaled(target_s, target_s, mode, QtCore.Qt.SmoothTransformation)
+            p.drawPixmap(-scaled.width() // 2, -scaled.height() // 2, scaled)
+        else: p.setBrush(QtGui.QColor("#800000")); p.drawEllipse(-label_radius, -label_radius, label_radius*2, label_radius*2)
+        p.setClipPath(QtGui.QPainterPath()); p.restore(); p.save(); p.translate(200, 200); s_grad = QtGui.QLinearGradient(-5, -5, 5, 5); s_grad.setColorAt(0.0, QtGui.QColor("#EEE")); s_grad.setColorAt(1.0, QtGui.QColor("#333")); p.setBrush(s_grad); p.setPen(QtCore.Qt.NoPen); p.drawEllipse(-5, -5, 10, 10); p.restore()
+        c_grad = QtGui.QLinearGradient(0, -4, 0, 4); c_grad.setColorAt(0.0, QtGui.QColor("#888")); c_grad.setColorAt(0.4, QtGui.QColor("#EEE")); c_grad.setColorAt(1.0, QtGui.QColor("#666")); d_metal, brass, pivot = QtGui.QColor("#2A2A2A"), QtGui.QColor("#CBB677"), QtCore.QPoint(370, 50)
+        p.save(); p.translate(pivot); p.setPen(QtCore.Qt.NoPen); p.setBrush(d_metal); p.drawEllipse(QtCore.QPoint(0,0), 22, 22); p.setBrush(QtGui.QColor("#111")); p.drawEllipse(QtCore.QPoint(0,0), 14, 14); p.setBrush(c_grad); p.drawEllipse(QtCore.QPoint(0,0), 6, 6); p.restore()
+        t_r = 175 - (self.current_frame/max(1, self.total_frames)*59); dist = math.sqrt(170**2 + 150**2); arm_a = math.degrees(math.atan2(150,-170)) - math.degrees(math.acos(max(-1, min(1, (dist**2 + 215**2 - t_r**2)/(2*dist*215))))) - 2
+        p.save(); p.translate(pivot); p.rotate(arm_a); p.setPen(QtCore.Qt.NoPen); p.setBrush(d_metal); p.drawRoundedRect(-60, -10, 45, 20, 3, 3); p.setBrush(QtGui.QColor("#444")); p.drawRect(-15, -5, 15, 10); p.setBrush(c_grad); tube = QtGui.QPainterPath(); tube.moveTo(0, -5); tube.lineTo(210, -3); tube.lineTo(210, 3); tube.lineTo(0, 5); tube.closeSubpath(); p.drawPath(tube); p.translate(210, 0); p.rotate(23); p.setBrush(d_metal); head = QtGui.QPainterPath(); head.moveTo(0, -6); head.lineTo(38, -5); head.lineTo(44, 0); head.lineTo(38, 5); head.lineTo(0, 6); head.closeSubpath(); p.drawPath(head); p.setPen(QtGui.QPen(c_grad, 2)); p.drawLine(32, -5, 48, -12); p.setPen(QtCore.Qt.NoPen); p.setBrush(brass); p.drawRoundedRect(10, 3, 24, 10, 2, 2); p.setBrush(QtGui.QColor("#EEE")); s_path = QtGui.QPainterPath(); s_path.moveTo(22, 13); s_path.lineTo(25, 19); s_path.lineTo(28, 13); s_path.closeSubpath(); p.drawPath(s_path); p.restore(); p.end(); self.lp_label.setPixmap(pix)
+
+    def _toggle_play(self): self.is_playing = not self.is_playing; self.btn_play.setText("❚❚ PAUSE" if self.is_playing else "▶ PLAY")
+    def _toggle_reverb(self): self.is_reverb_on = self.btn_reverb.isChecked(); self._update_theme_styles(); self.update()
+    def _toggle_sidebar(self): self.is_expanded = not self.is_expanded; self.setFixedSize(CONFIG["WIDTH_PLAYER"] + (CONFIG["WIDTH_SIDEBAR"] if self.is_expanded else 0), CONFIG["FIXED_HEIGHT"]); self.side_panel.setVisible(self.is_expanded); self.btn_toggle.setText("〈" if self.is_expanded else "〉")
+    def _on_lp_press(self, e): self.is_dragging_lp, self.last_mouse_angle, self.was_p, self.is_playing = True, self._get_angle(e.pos()), self.is_playing, False; self.btn_play.setText("▶ PLAY")
+    def _on_lp_move(self, e):
+        if self.is_dragging_lp:
+            curr = self._get_angle(e.pos()); delta = (curr - self.last_mouse_angle + 180) % 360 - 180; self.rotation_angle = (self.rotation_angle + delta) % 360
+            self.current_frame = max(0, min(self.current_frame + int(delta * self.sr * 5 / 360), self.total_frames - CONFIG["CHUNK_SIZE"])); self.last_mouse_angle = curr; self.render_lp(); self.slider.setValue(self.current_frame); self.time_left.setText(self._format_time(self.current_frame/self.sr))
+    def _on_lp_release(self, e): self.is_dragging_lp, self.is_playing = False, self.was_p; self.btn_play.setText("❚❚ PAUSE" if self.is_playing else "▶ PLAY")
+    def _on_frame_changed(self, f, v):
+        self.smoothed_volume = (CONFIG["SMOOTHING"]*v) + ((1-CONFIG["SMOOTHING"])*self.smoothed_volume)
+        if not self.slider.isSliderDown(): self.slider.setValue(f); self.time_left.setText(self._format_time(f/self.sr))
+    def _on_playback_finished(self): self.btn_play.setText("▶ PLAY"); self.smoothed_volume = 0; self.update()
+    def _on_list_double_click(self, item): self._change_track(os.path.join(CONFIG["MUSIC_DIR"], item.text()))
+    def _change_track(self, path): self.is_playing = False; self.worker.running = False; self.worker.wait(); self.file_path = path; self.current_frame = self.rotation_angle = 0; self.stream.stop_stream(); self.stream.close(); self._init_audio_engine(); self._load_metadata(); self.worker.running = True; self.worker.start(); self._toggle_play()
+    def _update_animation(self):
+        if (self.is_playing or self.is_dragging_lp) and not self.is_dragging_lp: self.rotation_angle = (self.rotation_angle + CONFIG["ROTATION_SPEED"]) % 360; self.render_lp()
+        self.update()
+    def _get_angle(self, pos): rel = pos - QtCore.QPoint(200, 200); return math.degrees(math.atan2(rel.y(), rel.x()))
+    def _format_time(self, sec): return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
+    def _seek_audio(self, val): self.rotation_angle = (self.rotation_angle + ((val - self.current_frame) * 360 / (self.sr * 1.8))) % 360; self.current_frame = val; self.render_lp()
+    def _refresh_playlist(self):
+        self.list_widget.clear()
+        if os.path.exists(CONFIG["MUSIC_DIR"]):
+            for f in os.listdir(CONFIG["MUSIC_DIR"]):
+                if f.lower().endswith(('.mp3', '.wav', '.flac')): self.list_widget.addItem(QtWidgets.QListWidgetItem(f))
+    def closeEvent(self, e): self.worker.running = False; self.worker.wait(); self.pa.terminate(); e.accept()
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv); default_m = ""
+    if os.path.exists(CONFIG["MUSIC_DIR"]):
+        files = [f for f in os.listdir(CONFIG["MUSIC_DIR"]) if f.lower().endswith(('.mp3', '.wav', '.flac'))]
+        if files: default_m = os.path.join(CONFIG["MUSIC_DIR"], files[0])
+    app.setStyle('Fusion')
+    
+    if default_m and os.path.exists(default_m): 
+        player = PremiumVintagePlayer(default_m); player.show(); sys.exit(app.exec_())
+    else: 
+        QtWidgets.QMessageBox.warning(None, "알림", "Music 폴더에 음악 파일이 없습니다.")
+        sys.exit(1)
