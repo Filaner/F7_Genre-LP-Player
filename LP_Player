@@ -103,7 +103,6 @@ class PremiumVintagePlayer(QtWidgets.QWidget):
         self.timer = QtCore.QTimer(); self.timer.timeout.connect(self._update_animation); self.timer.start(20)
 
     def _check_data_files(self):
-        """Data 폴더 내 필수 파일이 있는지 확인하고 없으면 창을 띄운 뒤 종료합니다."""
         missing = []
         for f in CONFIG["REQUIRED_FILES"]:
             if not os.path.exists(os.path.join(CONFIG["DATA_DIR"], f)):
@@ -190,7 +189,6 @@ class PremiumVintagePlayer(QtWidgets.QWidget):
         qss = self._get_btn_qss(color); self.btn_ai1.setStyleSheet(qss); self.btn_ai2.setStyleSheet(qss); self.btn_reverb.setStyleSheet(qss)
 
     def _switch_ai(self, mode):
-        """AI 버튼 클릭 시 모드를 변경하고 즉시 분석을 실행합니다."""
         self.selected_ai = mode
         self.btn_ai1.setChecked(mode == 1)
         self.btn_ai2.setChecked(mode == 2)
@@ -233,7 +231,6 @@ class PremiumVintagePlayer(QtWidgets.QWidget):
             self.title_lbl.setText(os.path.basename(self.file_path)); self.artist_lbl.setText("Unknown Artist"); self.info_lbl.setText("Unknown Album | Unknown Year"); self.has_album_art = False; self.render_lp()
 
     def _run_ai_analysis(self):
-        """현재 선택된 AI 모드에 따라 해당 함수만 호출합니다."""
         if self.selected_ai == 1:
             self._run_ai1_ml()
         else:
